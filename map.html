@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>EcoBici — mapa de uso</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<style>
+  :root{
+    --bg:#faf9f5;
+    --surface:#ffffff;
+    --border:#e4e2da;
+    --text:#1c1c1a;
+    --text-secondary:#6b6a63;
+    --lime-light:#e6efa0;
+    --lime-mid:#a9c02c;
+    --lime-dark:#5c6b12;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg);
+    color:var(--text);
+    height:100vh;
+    display:flex;
+    flex-direction:column;
+  }
+  header{
+    padding:1rem 1.5rem;
+    border-bottom:1px solid var(--border);
+    display:flex;
+    align-items:baseline;
+    gap:0.75rem;
+    flex-wrap:wrap;
+  }
+  header h1{
+    font-size:1.25rem;
+    font-weight:600;
+    margin:0;
+    letter-spacing:-0.01em;
+  }
+  header p{
+    margin:0;
+    font-size:0.85rem;
+    color:var(--text-secondary);
+  }
+  main{
+    flex:1;
+    display:grid;
+    grid-template-columns:1fr 300px;
+    min-height:0;
+  }
+  #map{ width:100%; height:100%; background:#eee; }
+  aside{
+    border-left:1px solid var(--border);
+    padding:1.25rem;
+    overflow-y:auto;
+    background:var(--surface);
+    display:flex;
+    flex-direction:column;
+    gap:1.25rem;
+  }
+  .stat{
+    display:flex;
+    flex-direction:column;
+    gap:2px;
+  }
+  .stat .valor{
+    font-size:1.5rem;
+    font-weight:600;
+  }
+  .stat .label{
+    font-size:0.78rem;
+    color:var(--text-secondary);
+  }
+  .bloque h2{
+    font-size:0.85rem;
+    font-weight:600;
+    margin:0 0 0.6rem;
+    color:var(--text-secondary);
+  }
+  .fila-top{
+    display:flex;
+    justify-content:space-between;
+    gap:0.5rem;
+    font-size:0.82rem;
+    padding:5px 0;
+    border-bottom:1px solid var(--border);
+  }
+  .fila-top:last-child{ border-bottom:none; }
+  .fila-top .nombre{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fila-top .cant{ color:var(--text-secondary); flex-shrink:0; }
+  .leyenda-item{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    font-size:0.78rem;
+    color:var(--text-secondary);
+    margin-bottom:4px;
+  }
+  .leyenda-dot{ width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+  .estado{
+    padding:1rem;
+    font-size:0.85rem;
+    color:var(--text-secondary);
+  }
+  @media (max-width: 720px){
+    main{ grid-template-columns:1fr; grid-template-rows:1fr auto; }
+    aside{ border-left:none; border-top:1px solid var(--border); max-height:40vh; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>EcoBici</h1>
+  <p>Uso de estaciones — datos reales de viajes 2025, Buenos Aires</p>
+</header>
+
+<main>
+  <div id="map"></div>
+  <aside id="panel">
+    <div class="estado" id="estado">Cargando datos desde la API...</div>
+  </aside>
+</main>
+
+<script>
+const API = "http://127.0.0.1:8000";
+
+const paneEl = document.getElementById("panel");
+const estadoEl = document.getElementById("estado");
+
+const map = L.map("map", { zoomControl: true }).setView([-34.6037, -58.3816], 12);
+L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", {
+  attribution: 'Tiles &copy; Esri',
+  maxZoom: 19,
+}).addTo(map);
+
+function radioPara(cant, max) {
+  const min = 4, maxR = 16;
+  if (!cant || max === 0) return min;
+  return min + (maxR - min) * Math.sqrt(cant / max);
+}
+
+function colorPara(cant, max) {
+  if (!cant || max === 0) return "#c9c7ba";
+  const t = cant / max;
+  if (t > 0.6) return "#5c6b12";
+  if (t > 0.35) return "#7a8d1a";
+  if (t > 0.15) return "#a9c02c";
+  return "#cbdb6f";
+}
+
+async function cargar() {
+  try {
+    const [estacionesRes, topRes, horaRes] = await Promise.all([
+      fetch(`${API}/estaciones`),
+      fetch(`${API}/viajes/top-estaciones?limite=1000`),
+      fetch(`${API}/viajes/por-hora`),
+    ]);
+    if (!estacionesRes.ok || !topRes.ok || !horaRes.ok) throw new Error("Respuesta no exitosa de la API");
+
+    const estaciones = await estacionesRes.json();
+    const ranking = await topRes.json();
+    const porHora = await horaRes.json();
+
+    const viajesPorEstacion = {};
+    ranking.forEach(r => { viajesPorEstacion[r.numero_de_estacion] = r.cantidad_viajes; });
+    const maxViajes = ranking.length ? ranking[0].cantidad_viajes : 0;
+    const totalViajesOrigen = ranking.reduce((acc, r) => acc + r.cantidad_viajes, 0);
+
+    estaciones.features.forEach(f => {
+      const cant = viajesPorEstacion[f.properties.numero_de_estacion] || 0;
+      const [lon, lat] = f.geometry.coordinates;
+      const marker = L.circleMarker([lat, lon], {
+        radius: radioPara(cant, maxViajes),
+        color: colorPara(cant, maxViajes),
+        fillColor: colorPara(cant, maxViajes),
+        fillOpacity: 0.75,
+        weight: 1,
+      }).addTo(map);
+      marker.bindPopup(
+        `<strong>${f.properties.nombre}</strong><br>${f.properties.barrio || ""}<br>${cant.toLocaleString("es-AR")} viajes de origen`
+      );
+    });
+
+    let horaPico = null, maxHora = -1;
+    porHora.forEach(h => { if (h.cantidad_viajes > maxHora) { maxHora = h.cantidad_viajes; horaPico = h.hora; } });
+
+    const top5 = ranking.slice(0, 5);
+
+    paneEl.innerHTML = `
+      <div class="stat">
+        <div class="valor">${estaciones.features.length.toLocaleString("es-AR")}</div>
+        <div class="label">estaciones en el mapa</div>
+      </div>
+      <div class="stat">
+        <div class="valor">${totalViajesOrigen.toLocaleString("es-AR")}</div>
+        <div class="label">viajes de origen registrados</div>
+      </div>
+      <div class="stat">
+        <div class="valor">${horaPico !== null ? horaPico + ":00" : "—"}</div>
+        <div class="label">hora de mayor demanda</div>
+      </div>
+      <div class="bloque">
+        <h2>Top 5 estaciones</h2>
+        ${top5.map(e => `
+          <div class="fila-top">
+            <span class="nombre">${e.nombre}</span>
+            <span class="cant">${e.cantidad_viajes.toLocaleString("es-AR")}</span>
+          </div>
+        `).join("")}
+      </div>
+      <div class="bloque">
+        <h2>Referencias</h2>
+        <div class="leyenda-item"><span class="leyenda-dot" style="background:#5c6b12"></span>Uso alto</div>
+        <div class="leyenda-item"><span class="leyenda-dot" style="background:#a9c02c"></span>Uso medio</div>
+        <div class="leyenda-item"><span class="leyenda-dot" style="background:#cbdb6f"></span>Uso bajo</div>
+      </div>
+    `;
+  } catch (err) {
+    paneEl.innerHTML = `
+      <div class="estado">
+        <strong>No se pudo conectar con la API.</strong><br><br>
+        Verificá que el servidor esté corriendo en otra terminal, parado en la carpeta del proyecto:<br><br>
+        <code>uvicorn api:app --reload</code><br><br>
+        Y que esa terminal siga abierta mientras usás este mapa.
+      </div>
+    `;
+    console.error(err);
+  }
+}
+
+cargar();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,12 @@
+# Entorno virtual
+venv/
+
+# Datos crudos descargados (pesados, se regeneran con ingest.py)
+raw/
+
+# Cache de Python
+__pycache__/
+*.pyc
+
+# Variables de entorno / secretos, si en algún momento agregás alguno
+.env
